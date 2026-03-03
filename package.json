@@ -1,0 +1,144 @@
+{
+  "name": "cli-timeline",
+  "displayName": "CLI Timeline",
+  "description": "GitLens for AI Prompts — see what every CLI prompt changed. Browse sessions, blame lines, diff prompts, revert files.",
+  "version": "0.1.0",
+  "publisher": "ayushagg31",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other", "Visualization"],
+  "keywords": ["copilot", "cli", "timeline", "prompt", "history", "blame", "diff", "ai", "claude", "cline"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "icon": "resources/cli-timeline-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayushagg31/cli-timeline"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cli-timeline",
+          "title": "CLI Timeline",
+          "icon": "resources/cli-timeline-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cli-timeline": [
+        {
+          "id": "cliTimeline.sessions",
+          "name": "Sessions"
+        },
+        {
+          "id": "cliTimeline.promptDetails",
+          "name": "Prompt Details",
+          "when": "cliTimeline.promptSelected"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cliTimeline.refreshSessions",
+        "title": "CLI Timeline: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cliTimeline.showPromptsForFile",
+        "title": "CLI Timeline: Show Prompts for This File"
+      },
+      {
+        "command": "cliTimeline.toggleBlame",
+        "title": "CLI Timeline: Toggle Prompt Blame"
+      },
+      {
+        "command": "cliTimeline.comparePrompts",
+        "title": "CLI Timeline: Compare File Between Prompts"
+      },
+      {
+        "command": "cliTimeline.revertToPrompt",
+        "title": "CLI Timeline: Revert File to Prompt State"
+      },
+      {
+        "command": "cliTimeline.previousPrompt",
+        "title": "CLI Timeline: Previous Prompt Revision"
+      },
+      {
+        "command": "cliTimeline.nextPrompt",
+        "title": "CLI Timeline: Next Prompt Revision"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cliTimeline.refreshSessions",
+          "when": "view == cliTimeline.sessions",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "cliTimeline.showPromptsForFile",
+          "group": "3_compare"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "cliTimeline.toggleBlame",
+        "key": "alt+b",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cliTimeline.previousPrompt",
+        "key": "alt+[",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cliTimeline.nextPrompt",
+        "key": "alt+]",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "CLI Timeline",
+      "properties": {
+        "cliTimeline.blame.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline prompt blame annotations on the current line"
+        },
+        "cliTimeline.blame.format": {
+          "type": "string",
+          "default": "${icon} \"${prompt}\" • ${tool} • ${timeAgo}",
+          "description": "Format for blame annotation text"
+        },
+        "cliTimeline.sessionPaths.copilotCLI": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to Copilot CLI session storage (default: ~/.copilot/session-state)"
+        },
+        "cliTimeline.sessionPaths.claudeCode": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to Claude Code session storage (default: ~/.claude)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "@types/vscode": "^1.109.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.9.3"
+  }
+}
