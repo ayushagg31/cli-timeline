@@ -4,6 +4,12 @@ import { SessionExplorerProvider } from './views/sessionExplorer';
 import { BlameProvider } from './providers/blameProvider';
 import { PromptTimelineProvider } from './providers/timelineProvider';
 import { PromptHoverProvider } from './providers/hoverProvider';
+import {
+  SnapshotContentProvider,
+  showPromptDiffCommand,
+  previousPromptCommand,
+  revertToPromptCommand,
+} from './providers/snapshotProvider';
 
 let sessionService: SessionService;
 let blameProvider: BlameProvider;
@@ -36,6 +42,12 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider)
   );
 
+  // Snapshot Content Provider (virtual documents for diffs)
+  const snapshotProvider = new SnapshotContentProvider(sessionService);
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(SnapshotContentProvider.scheme, snapshotProvider)
+  );
+
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('cliTimeline.refreshSessions', () => loadWorkspaceSessions()),
@@ -44,20 +56,19 @@ export async function activate(context: vscode.ExtensionContext) {
       showPromptsForFile(uri);
     }),
     vscode.commands.registerCommand('cliTimeline.showPromptDiff', (prompt, filePath) => {
-      showPromptDiff(prompt, filePath);
+      showPromptDiffCommand(sessionService, prompt, filePath);
     }),
     vscode.commands.registerCommand('cliTimeline.comparePrompts', () => {
-      // TODO: implement prompt comparison picker
-      vscode.window.showInformationMessage('CLI Timeline: Compare prompts — coming soon!');
+      previousPromptCommand(sessionService);
     }),
     vscode.commands.registerCommand('cliTimeline.revertToPrompt', () => {
-      vscode.window.showInformationMessage('CLI Timeline: Revert to prompt — coming soon!');
+      revertToPromptCommand(sessionService);
     }),
     vscode.commands.registerCommand('cliTimeline.previousPrompt', () => {
-      vscode.window.showInformationMessage('CLI Timeline: Previous prompt — coming soon!');
+      previousPromptCommand(sessionService);
     }),
     vscode.commands.registerCommand('cliTimeline.nextPrompt', () => {
-      vscode.window.showInformationMessage('CLI Timeline: Next prompt — coming soon!');
+      previousPromptCommand(sessionService);
     }),
     vscode.commands.registerCommand('cliTimeline.revealPrompt', (_promptId: string) => {
       // TODO: reveal prompt in session explorer
@@ -124,30 +135,31 @@ async function showPromptsForFile(uri?: vscode.Uri): Promise<void> {
   });
 
   if (selected) {
-    await showPromptDiff(selected.prompt, fileUri.fsPath);
+    await showPromptDiffCommand(sessionService, selected.prompt, fileUri.fsPath);
   }
 }
 
-async function showPromptDiff(prompt: unknown, filePath: string): Promise<void> {
-  // For now, just open the file — diff implementation comes in Phase 7
-  const uri = vscode.Uri.file(filePath);
-  await vscode.commands.executeCommand('vscode.open', uri);
-}
+let lastReloadTime = 0;
+const RELOAD_DEBOUNCE_MS = 5000;
 
 function setupFileWatcher(): vscode.FileSystemWatcher | undefined {
-  // Watch for changes to session state files for live updates
   try {
-    const os = require('os');
+    const nodeos = require('os');
+    const nodepath = require('path');
     const pattern = new vscode.RelativePattern(
-      vscode.Uri.file(require('path').join(os.homedir(), '.copilot', 'session-state')),
+      vscode.Uri.file(nodepath.join(nodeos.homedir(), '.copilot', 'session-state')),
       '**/events.jsonl'
     );
     const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-    watcher.onDidChange(() => {
-      // Debounce: only reload if the last reload was > 5 seconds ago
-      loadWorkspaceSessions();
-    });
-    watcher.onDidCreate(() => loadWorkspaceSessions());
+    const debouncedReload = () => {
+      const now = Date.now();
+      if (now - lastReloadTime > RELOAD_DEBOUNCE_MS) {
+        lastReloadTime = now;
+        loadWorkspaceSessions();
+      }
+    };
+    watcher.onDidChange(debouncedReload);
+    watcher.onDidCreate(debouncedReload);
     return watcher;
   } catch {
     return undefined;
