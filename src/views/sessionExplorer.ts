@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { SessionService } from '../services/sessionService';
 import { Session, PromptEvent, FileChange, CLI_TOOLS } from '../models/types';
 
@@ -46,7 +47,7 @@ class FileChangeNode extends vscode.TreeItem {
     public readonly change: FileChange,
     public readonly prompt: PromptEvent
   ) {
-    const fileName = change.path.split('/').pop() || change.path;
+    const fileName = path.basename(change.path);
     super(fileName, vscode.TreeItemCollapsibleState.None);
 
     const statusIcon = change.status === 'created' ? 'diff-added'

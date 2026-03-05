@@ -51,10 +51,10 @@ export class ClaudeCodeAdapter implements CLIAdapter {
   async sessionMatchesWorkspace(sessionFile: string, workspacePath: string): Promise<boolean> {
     const cwd = await this.readSessionCwd(sessionFile);
     if (!cwd) { return false; }
-    const normalizedWorkspace = workspacePath.replace(/\/$/, '');
-    const normalizedCwd = cwd.replace(/\/$/, '');
+    const normalizedWorkspace = workspacePath.replace(/[\\/]+$/, '');
+    const normalizedCwd = cwd.replace(/[\\/]+$/, '');
     return normalizedCwd === normalizedWorkspace ||
-           normalizedCwd.startsWith(normalizedWorkspace + '/');
+           normalizedCwd.startsWith(normalizedWorkspace + path.sep);
   }
 
   async parseSession(sessionFile: string): Promise<Session | null> {

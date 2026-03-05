@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as path from 'path';
 import { SessionService } from '../services/sessionService';
 import { PromptEvent } from '../models/types';
 
@@ -20,7 +21,9 @@ export class SnapshotContentProvider implements vscode.TextDocumentContentProvid
     if (parts.length < 3) { return ''; }
 
     const [sessionId, promptId, ...filePathParts] = parts;
-    const filePath = '/' + decodeURIComponent(filePathParts.join('/'));
+    const reconstructedPath = decodeURIComponent(filePathParts.join('/'));
+    // Preserve Windows absolute paths (e.g., C:/Users/...) — don't prepend /
+    const filePath = /^[a-zA-Z]:/.test(reconstructedPath) ? reconstructedPath : '/' + reconstructedPath;
 
     const session = this.sessionService.getSessionById(sessionId);
     if (!session) { return ''; }
@@ -125,7 +128,7 @@ export async function showPromptDiffCommand(
 
   const promptIndex = session.prompts.findIndex(p => p.id === prompt.id);
   const promptLabel = prompt.userMessage.substring(0, 40) + (prompt.userMessage.length > 40 ? '…' : '');
-  const fileName = filePath.split('/').pop() || filePath;
+  const fileName = path.basename(filePath);
 
   const change = prompt.filesChanged.find(f => f.path === filePath);
   if (!change) {
@@ -158,7 +161,7 @@ export async function revertFileToSnapshotCommand(
   prompt: PromptEvent,
   filePath: string
 ): Promise<void> {
-  const fileName = filePath.split('/').pop() || filePath;
+  const fileName = path.basename(filePath);
   const promptLabel = prompt.userMessage.substring(0, 40) + (prompt.userMessage.length > 40 ? '…' : '');
 
   const confirm = await vscode.window.showWarningMessage(
@@ -214,7 +217,7 @@ export async function revertPromptCommand(
   let message = `Revert ${filesWithBackup.length} file(s) to state before "${promptLabel}"?`;
   if (filesWithoutBackup.length > 0) {
     const skippedNames = filesWithoutBackup
-      .map(f => `• ${f.path.split('/').pop()}`)
+      .map(f => `• ${path.basename(f.path)}`)
       .join('\n');
     message +=
       `\n\n${filesWithoutBackup.length} file(s) have no backup (session may be old or CLI was not updated at the time) and will be skipped:\n` +
@@ -288,7 +291,7 @@ export async function revertToPromptCommand(sessionService: SessionService): Pro
   if (!selected) { return; }
 
   const confirm = await vscode.window.showWarningMessage(
-    `Revert ${filePath.split('/').pop()} to state before prompt "${selected.prompt.userMessage.substring(0, 40)}"?`,
+    `Revert ${path.basename(filePath)} to state before prompt "${selected.prompt.userMessage.substring(0, 40)}"?`,
     { modal: true },
     'Revert'
   );
@@ -304,10 +307,10 @@ export async function revertToPromptCommand(sessionService: SessionService): Pro
     );
     edit.replace(editor.document.uri, fullRange, content.toString('utf-8'));
     await vscode.workspace.applyEdit(edit);
-    vscode.window.showInformationMessage(`Reverted ${filePath.split('/').pop()} to pre-prompt state.`);
+    vscode.window.showInformationMessage(`Reverted ${path.basename(filePath)} to pre-prompt state.`);
   } else {
     vscode.window.showWarningMessage(
-      `Cannot revert ${filePath.split('/').pop()}: No backup was found for this file. ` +
+      `Cannot revert ${path.basename(filePath)}: No backup was found for this file. ` +
       `This session may be old or the CLI was not updated at the time. ` +
       `Ensure your CLI is updated to the latest version for future sessions.`
     );

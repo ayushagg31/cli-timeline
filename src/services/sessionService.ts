@@ -14,6 +14,7 @@ export class SessionService {
     promptToFiles: new Map(),
     fileLineBlame: new Map(),
   };
+  private _isLoading = false;
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -23,6 +24,10 @@ export class SessionService {
   }
 
   async loadSessions(workspacePath: string): Promise<void> {
+    if (this._isLoading) { return; }
+    this._isLoading = true;
+
+    try {
     this.sessions = [];
     this.index = {
       fileToPrompts: new Map(),
@@ -66,6 +71,9 @@ export class SessionService {
 
     this.buildIndex();
     this._onDidChange.fire();
+    } finally {
+      this._isLoading = false;
+    }
   }
 
   private buildIndex(): void {
@@ -221,10 +229,15 @@ export class SessionService {
       await this.copyDirRecursive(srcSnapshots, path.join(exportDir, 'rewind-snapshots'));
     } catch { /* snapshots may not exist */ }
 
-    // git add and commit
-    await execFileAsync('git', ['add', exportDir], { cwd: workspacePath });
-    const commitMsg = `chore: add CLI session "${meta.summary}"\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`;
-    await execFileAsync('git', ['commit', '-m', commitMsg], { cwd: workspacePath });
+    // git add and commit — clean up copied files if git fails
+    try {
+      await execFileAsync('git', ['add', exportDir], { cwd: workspacePath });
+      const commitMsg = `chore: add CLI session "${meta.summary}"\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`;
+      await execFileAsync('git', ['commit', '-m', commitMsg], { cwd: workspacePath });
+    } catch (gitError) {
+      await fs.promises.rm(exportDir, { recursive: true, force: true }).catch(() => {});
+      throw gitError;
+    }
   }
 
   /** Load shared sessions from .cli-sessions/ in the workspace */
@@ -274,7 +287,7 @@ export class SessionService {
 
   /** Remap absolute file paths from one workspace root to another */
   private remapSessionPaths(session: Session, fromPrefix: string, toPrefix: string): void {
-    const normalizedFrom = fromPrefix.replace(/\/$/, '');
+    const normalizedFrom = fromPrefix.replace(/[\\/]+$/, '');
     const remap = (p: string) => {
       if (p.startsWith(normalizedFrom)) {
         return toPrefix + p.substring(normalizedFrom.length);

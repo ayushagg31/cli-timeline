@@ -71,20 +71,20 @@ export class CopilotCLIAdapter implements CLIAdapter {
     const meta = await this.parseWorkspaceYaml(sessionDir);
     if (!meta) { return false; }
 
-    const normalizedWorkspace = workspacePath.replace(/\/$/, '');
+    const normalizedWorkspace = workspacePath.replace(/[\\/]+$/, '');
 
     // Prefer git_root for matching (most accurate)
     if (meta.git_root) {
-      const gitRoot = meta.git_root.replace(/\/$/, '');
+      const gitRoot = meta.git_root.replace(/[\\/]+$/, '');
       return gitRoot === normalizedWorkspace ||
-             normalizedWorkspace.startsWith(gitRoot + '/');
+             normalizedWorkspace.startsWith(gitRoot + path.sep);
     }
 
     // Fallback to cwd — must be exact or cwd inside workspace
     if (meta.cwd) {
-      const cwd = meta.cwd.replace(/\/$/, '');
+      const cwd = meta.cwd.replace(/[\\/]+$/, '');
       return cwd === normalizedWorkspace ||
-             cwd.startsWith(normalizedWorkspace + '/');
+             cwd.startsWith(normalizedWorkspace + path.sep);
     }
 
     return false;
@@ -111,7 +111,12 @@ export class CopilotCLIAdapter implements CLIAdapter {
   }
 
   async getSnapshotContent(sessionDir: string, backupFile: string): Promise<Buffer | null> {
-    const backupPath = path.join(sessionDir, 'rewind-snapshots', 'backups', backupFile);
+    const backupsDir = path.resolve(sessionDir, 'rewind-snapshots', 'backups');
+    const backupPath = path.resolve(backupsDir, backupFile);
+    // Prevent path traversal — resolved path must stay inside the backups directory
+    if (!backupPath.startsWith(backupsDir + path.sep)) {
+      return null;
+    }
     try {
       return await fs.promises.readFile(backupPath);
     } catch {
@@ -274,7 +279,8 @@ export class CopilotCLIAdapter implements CLIAdapter {
       if (toolName === 'edit' && args.path) {
         const filePath = args.path;
         // Skip session internal files
-        if (filePath.includes('session-state/') || filePath.includes('.copilot/')) { continue; }
+        if (filePath.includes(`session-state${path.sep}`) || filePath.includes(`session-state/`) ||
+            filePath.includes(`.copilot${path.sep}`) || filePath.includes(`.copilot/`)) { continue; }
 
         const key = `edit:${filePath}:${event.id}`;
         if (seen.has(key)) { continue; }
@@ -288,7 +294,8 @@ export class CopilotCLIAdapter implements CLIAdapter {
         });
       } else if (toolName === 'create' && args.path) {
         const filePath = args.path;
-        if (filePath.includes('session-state/') || filePath.includes('.copilot/')) { continue; }
+        if (filePath.includes(`session-state${path.sep}`) || filePath.includes(`session-state/`) ||
+            filePath.includes(`.copilot${path.sep}`) || filePath.includes(`.copilot/`)) { continue; }
 
         const key = `create:${filePath}`;
         if (seen.has(key)) { continue; }
