@@ -2,19 +2,7 @@ import * as vscode from 'vscode';
 import { SessionService } from '../services/sessionService';
 import { Session, PromptEvent, FileChange, CLI_TOOLS } from '../models/types';
 
-type TreeItem = ToolNode | SessionNode | PromptNode | FileChangeNode;
-
-class ToolNode extends vscode.TreeItem {
-  constructor(public readonly toolKey: string, sessionCount: number) {
-    const info = CLI_TOOLS[toolKey as keyof typeof CLI_TOOLS];
-    super(
-      `${info?.name || toolKey} (${sessionCount})`,
-      vscode.TreeItemCollapsibleState.Expanded
-    );
-    this.iconPath = new vscode.ThemeIcon(info?.icon || 'symbol-event');
-    this.contextValue = 'tool';
-  }
-}
+type TreeItem = SessionNode | PromptNode | FileChangeNode;
 
 class SessionNode extends vscode.TreeItem {
   constructor(public readonly session: Session) {
@@ -22,37 +10,33 @@ class SessionNode extends vscode.TreeItem {
     super(label, vscode.TreeItemCollapsibleState.Collapsed);
 
     const info = CLI_TOOLS[session.tool];
+
     this.iconPath = new vscode.ThemeIcon(info?.icon || 'symbol-event');
-    this.description = formatDate(session.createdAt);
-    this.tooltip = new vscode.MarkdownString(
-      `**${label}**\n\n` +
-      `📅 ${session.createdAt.toLocaleString()}\n\n` +
-      `📂 ${session.cwd}\n\n` +
-      `🔀 ${session.branch || 'N/A'}\n\n` +
-      `💬 ${session.prompts.length} prompts`
-    );
-    this.contextValue = 'session';
+
+    if (session.shared) {
+      this.description = `${session.author || 'unknown'} • ${formatDate(session.createdAt)}`;
+      this.contextValue = 'sharedSession';
+      this.tooltip = session.tool === 'claude-code'
+        ? `Shared by ${session.author} — ${info?.name || session.tool}\nHistory & diff available. Revert not available.`
+        : `Shared by ${session.author} — ${info?.name || session.tool}`;
+    } else {
+      this.description = formatDate(session.createdAt);
+      this.contextValue = 'session';
+      this.tooltip = session.tool === 'claude-code'
+        ? `${info?.name || session.tool} — History & diff available. Revert not available (Claude Code does not save backup files).`
+        : info?.name || session.tool;
+    }
   }
 }
 
 class PromptNode extends vscode.TreeItem {
-  constructor(
-    public readonly prompt: PromptEvent,
-    public readonly promptIndex: number
-  ) {
+  constructor(public readonly prompt: PromptEvent) {
     const truncated = prompt.userMessage.substring(0, 80) + (prompt.userMessage.length > 80 ? '...' : '');
-    super(`#${promptIndex + 1}: ${truncated}`, vscode.TreeItemCollapsibleState.Collapsed);
+    super(truncated, vscode.TreeItemCollapsibleState.Collapsed);
 
-    const info = CLI_TOOLS[prompt.tool];
     this.iconPath = new vscode.ThemeIcon('comment', new vscode.ThemeColor('charts.blue'));
     this.description = `${prompt.filesChanged.length} files • ${formatTimeAgo(prompt.timestamp)}`;
-    this.tooltip = new vscode.MarkdownString(
-      `**Prompt #${promptIndex + 1}**\n\n` +
-      `> ${prompt.userMessage.substring(0, 300)}\n\n` +
-      `📅 ${prompt.timestamp.toLocaleString()}\n\n` +
-      `📄 ${prompt.filesChanged.length} files changed\n\n` +
-      `🔧 ${prompt.toolCalls.length} tool calls`
-    );
+    this.tooltip = prompt.userMessage;
     this.contextValue = 'prompt';
   }
 }
@@ -72,19 +56,114 @@ class FileChangeNode extends vscode.TreeItem {
 
     this.iconPath = new vscode.ThemeIcon(statusIcon, new vscode.ThemeColor(statusColor));
     this.description = change.path;
-    this.tooltip = `${change.status}: ${change.path}`;
     this.contextValue = 'fileChange';
 
-    // Click to open the file
     this.command = {
-      command: 'vscode.open',
-      title: 'Open File',
-      arguments: [vscode.Uri.file(change.path)],
+      command: 'cliTimeline.showPromptDiff',
+      title: 'Show Prompt Diff',
+      arguments: [prompt, change.path],
     };
   }
 }
 
 export class SessionExplorerProvider implements vscode.TreeDataProvider<TreeItem> {
+  private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+  private filterText = '';
+  private treeView: vscode.TreeView<TreeItem> | undefined;
+
+  constructor(private sessionService: SessionService) {
+    sessionService.onDidChange(() => this.refresh());
+  }
+
+  /** Call after registering with createTreeView to enable view messages */
+  setTreeView(treeView: vscode.TreeView<TreeItem>): void {
+    this.treeView = treeView;
+  }
+
+  setFilter(text: string): void {
+    this.filterText = text.toLowerCase();
+    if (this.treeView) {
+      this.treeView.message = text ? `Filter: ${text}` : undefined;
+    }
+    this.refresh();
+  }
+
+  clearFilter(): void {
+    this.filterText = '';
+    if (this.treeView) {
+      this.treeView.message = undefined;
+    }
+    this.refresh();
+  }
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  getTreeItem(element: TreeItem): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(element?: TreeItem): TreeItem[] {
+    if (!element) {
+      return this.getRootChildren();
+    }
+
+    if (element instanceof SessionNode) {
+      return getPromptsForSession(element.session, this.filterText);
+    }
+
+    if (element instanceof PromptNode) {
+      return getFileChangesForPrompt(element.prompt);
+    }
+
+    return [];
+  }
+
+  private getRootChildren(): TreeItem[] {
+    // Only show local (non-shared) sessions
+    const sessions = this.sessionService.getSessions().filter(s => !s.shared);
+    if (sessions.length === 0) {
+      const item = new vscode.TreeItem('No CLI sessions found for this workspace');
+      item.iconPath = new vscode.ThemeIcon('info');
+      return [item as TreeItem];
+    }
+
+    let filtered = sessions
+      .filter(s => s.prompts.some(p => p.filesChanged.length > 0));
+
+    if (this.filterText) {
+      filtered = filtered.filter(s => {
+        const sessionMatch = (s.summary || s.id).toLowerCase().includes(this.filterText);
+        const promptMatch = s.prompts.some(p =>
+          p.filesChanged.length > 0 && p.userMessage.toLowerCase().includes(this.filterText)
+        );
+        return sessionMatch || promptMatch;
+      });
+    }
+
+    if (filtered.length === 0) {
+      const item = new vscode.TreeItem(`No results for "${this.filterText}"`);
+      item.iconPath = new vscode.ThemeIcon('search');
+      return [item as TreeItem];
+    }
+
+    return filtered
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map(s => new SessionNode(s));
+  }
+
+  dispose(): void {
+    this._onDidChangeTreeData.dispose();
+  }
+}
+
+/**
+ * Separate tree view provider for shared sessions committed to the repo.
+ * Read-only — no revert or share buttons.
+ */
+export class SharedSessionExplorerProvider implements vscode.TreeDataProvider<TreeItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -105,71 +184,68 @@ export class SessionExplorerProvider implements vscode.TreeDataProvider<TreeItem
       return this.getRootChildren();
     }
 
-    if (element instanceof ToolNode) {
-      return this.getSessionsForTool(element.toolKey);
-    }
-
     if (element instanceof SessionNode) {
-      return this.getPromptsForSession(element.session);
+      return getPromptsForSession(element.session, '');
     }
 
     if (element instanceof PromptNode) {
-      return this.getFileChangesForPrompt(element.prompt);
+      return getFileChangesForPrompt(element.prompt);
     }
 
     return [];
   }
 
   private getRootChildren(): TreeItem[] {
-    const sessions = this.sessionService.getSessions();
-    if (sessions.length === 0) {
-      const item = new vscode.TreeItem('No CLI sessions found for this workspace');
+    const shared = this.sessionService.getSessions()
+      .filter(s => s.shared && s.prompts.some(p => p.filesChanged.length > 0));
+
+    if (shared.length === 0) {
+      const item = new vscode.TreeItem('No shared sessions in this repo');
       item.iconPath = new vscode.ThemeIcon('info');
+      item.description = 'Use "Share Session to Repo" to add one';
       return [item as TreeItem];
     }
 
-    // Group by tool
-    const byTool = new Map<string, Session[]>();
-    for (const session of sessions) {
-      const existing = byTool.get(session.tool) || [];
-      existing.push(session);
-      byTool.set(session.tool, existing);
-    }
-
-    // If only one tool, skip the tool grouping level
-    if (byTool.size === 1) {
-      const [, toolSessions] = [...byTool.entries()][0];
-      return this.groupSessionsByDate(toolSessions);
-    }
-
-    return [...byTool.entries()].map(([tool, toolSessions]) =>
-      new ToolNode(tool, toolSessions.length)
-    );
-  }
-
-  private getSessionsForTool(toolKey: string): TreeItem[] {
-    const sessions = this.sessionService.getSessions().filter(s => s.tool === toolKey);
-    return this.groupSessionsByDate(sessions);
-  }
-
-  private groupSessionsByDate(sessions: Session[]): SessionNode[] {
-    // Sort by date descending and return as flat list with date in description
-    return sessions
+    return shared
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .map(s => new SessionNode(s));
-  }
-
-  private getPromptsForSession(session: Session): PromptNode[] {
-    return session.prompts.map((p, i) => new PromptNode(p, i));
-  }
-
-  private getFileChangesForPrompt(prompt: PromptEvent): FileChangeNode[] {
-    return prompt.filesChanged.map(f => new FileChangeNode(f, prompt));
   }
 
   dispose(): void {
     this._onDidChangeTreeData.dispose();
   }
+}
+
+// Shared helpers used by both providers
+
+function getPromptsForSession(session: Session, filterText: string): PromptNode[] {
+  let prompts = session.prompts
+    .filter(p => p.filesChanged.length > 0);
+
+  if (filterText) {
+    const sessionMatch = (session.summary || session.id).toLowerCase().includes(filterText);
+    if (!sessionMatch) {
+      prompts = prompts.filter(p =>
+        p.userMessage.toLowerCase().includes(filterText)
+      );
+    }
+  }
+
+  // Latest first
+  return prompts
+    .reverse()
+    .map(p => new PromptNode(p));
+}
+
+function getFileChangesForPrompt(prompt: PromptEvent): FileChangeNode[] {
+  const seen = new Set<string>();
+  return prompt.filesChanged
+    .filter(f => {
+      if (seen.has(f.path)) { return false; }
+      seen.add(f.path);
+      return true;
+    })
+    .map(f => new FileChangeNode(f, prompt));
 }
 
 function formatDate(date: Date): string {

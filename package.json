@@ -1,7 +1,7 @@
 {
   "name": "cli-timeline",
   "displayName": "CLI Timeline",
-  "description": "GitLens for AI Prompts — see what every CLI prompt changed. Browse sessions, blame lines, diff prompts, revert files.",
+  "description": "See what every AI prompt changed. Supports GitHub Copilot CLI and Claude Code. Browse sessions, diff prompts, revert files.",
   "version": "0.1.0",
   "publisher": "ayushagg31",
   "license": "MIT",
@@ -18,7 +18,6 @@
     "timeline",
     "prompt",
     "history",
-    "blame",
     "diff",
     "ai",
     "claude",
@@ -50,9 +49,9 @@
           "name": "Sessions"
         },
         {
-          "id": "cliTimeline.promptDetails",
-          "name": "Prompt Details",
-          "when": "cliTimeline.promptSelected"
+          "id": "cliTimeline.sharedSessions",
+          "name": "Shared Sessions",
+          "when": "cliTimeline.hasSharedSessions"
         }
       ]
     },
@@ -63,28 +62,42 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "cliTimeline.filterSessions",
+        "title": "CLI Timeline: Search",
+        "icon": "$(search)"
+      },
+      {
+        "command": "cliTimeline.clearFilter",
+        "title": "CLI Timeline: Clear Search",
+        "icon": "$(close)"
+      },
+      {
         "command": "cliTimeline.showPromptsForFile",
         "title": "CLI Timeline: Show Prompts for This File"
-      },
-      {
-        "command": "cliTimeline.toggleBlame",
-        "title": "CLI Timeline: Toggle Prompt Blame"
-      },
-      {
-        "command": "cliTimeline.comparePrompts",
-        "title": "CLI Timeline: Compare File Between Prompts"
       },
       {
         "command": "cliTimeline.revertToPrompt",
         "title": "CLI Timeline: Revert File to Prompt State"
       },
       {
-        "command": "cliTimeline.previousPrompt",
-        "title": "CLI Timeline: Previous Prompt Revision"
+        "command": "cliTimeline.revertFileToSnapshot",
+        "title": "Revert to Pre-Prompt State",
+        "icon": "$(discard)"
       },
       {
-        "command": "cliTimeline.nextPrompt",
-        "title": "CLI Timeline: Next Prompt Revision"
+        "command": "cliTimeline.revertPrompt",
+        "title": "Revert All Files in Prompt",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "cliTimeline.copySessionId",
+        "title": "Copy Session ID",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "cliTimeline.commitSession",
+        "title": "Share Session to Repo",
+        "icon": "$(repo-push)"
       }
     ],
     "menus": {
@@ -93,6 +106,38 @@
           "command": "cliTimeline.refreshSessions",
           "when": "view == cliTimeline.sessions",
           "group": "navigation"
+        },
+        {
+          "command": "cliTimeline.filterSessions",
+          "when": "view == cliTimeline.sessions && !cliTimeline.filterActive",
+          "group": "navigation"
+        },
+        {
+          "command": "cliTimeline.clearFilter",
+          "when": "view == cliTimeline.sessions && cliTimeline.filterActive",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cliTimeline.copySessionId",
+          "when": "view == cliTimeline.sessions && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "cliTimeline.commitSession",
+          "when": "view == cliTimeline.sessions && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "cliTimeline.revertPrompt",
+          "when": "view == cliTimeline.sessions && viewItem == prompt",
+          "group": "inline"
+        },
+        {
+          "command": "cliTimeline.revertFileToSnapshot",
+          "when": "view == cliTimeline.sessions && viewItem == fileChange",
+          "group": "inline"
         }
       ],
       "explorer/context": [
@@ -102,36 +147,9 @@
         }
       ]
     },
-    "keybindings": [
-      {
-        "command": "cliTimeline.toggleBlame",
-        "key": "alt+b",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "cliTimeline.previousPrompt",
-        "key": "alt+[",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "cliTimeline.nextPrompt",
-        "key": "alt+]",
-        "when": "editorTextFocus"
-      }
-    ],
     "configuration": {
       "title": "CLI Timeline",
       "properties": {
-        "cliTimeline.blame.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show inline prompt blame annotations on the current line"
-        },
-        "cliTimeline.blame.format": {
-          "type": "string",
-          "default": "${icon} \"${prompt}\" • ${tool} • ${timeAgo}",
-          "description": "Format for blame annotation text"
-        },
         "cliTimeline.sessionPaths.copilotCLI": {
           "type": "string",
           "default": "",

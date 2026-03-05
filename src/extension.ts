@@ -1,46 +1,35 @@
 import * as vscode from 'vscode';
 import { SessionService } from './services/sessionService';
-import { SessionExplorerProvider } from './views/sessionExplorer';
-import { BlameProvider } from './providers/blameProvider';
-import { PromptTimelineProvider } from './providers/timelineProvider';
-import { PromptHoverProvider } from './providers/hoverProvider';
+import { SessionExplorerProvider, SharedSessionExplorerProvider } from './views/sessionExplorer';
 import {
   SnapshotContentProvider,
   showPromptDiffCommand,
-  previousPromptCommand,
   revertToPromptCommand,
+  revertFileToSnapshotCommand,
+  revertPromptCommand,
 } from './providers/snapshotProvider';
 
 let sessionService: SessionService;
-let blameProvider: BlameProvider;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('CLI Timeline: activating...');
 
-  // Initialize services
   sessionService = new SessionService();
 
-  // Session Explorer sidebar
+  // Session Explorer sidebar — local sessions
   const sessionExplorer = new SessionExplorerProvider(sessionService);
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('cliTimeline.sessions', sessionExplorer)
-  );
+  const treeView = vscode.window.createTreeView('cliTimeline.sessions', {
+    treeDataProvider: sessionExplorer,
+  });
+  sessionExplorer.setTreeView(treeView);
+  context.subscriptions.push(treeView);
 
-  // Timeline Provider (integrates into VS Code Timeline panel)
-  const timelineProvider = new PromptTimelineProvider(sessionService);
-  context.subscriptions.push(
-    vscode.timeline.registerTimelineProvider('file', timelineProvider)
-  );
-
-  // Blame Provider (inline annotations)
-  blameProvider = new BlameProvider(sessionService);
-  context.subscriptions.push(blameProvider);
-
-  // Hover Provider (rich prompt info on hover)
-  const hoverProvider = new PromptHoverProvider(sessionService);
-  context.subscriptions.push(
-    vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider)
-  );
+  // Shared Sessions sidebar — sessions committed to the repo
+  const sharedExplorer = new SharedSessionExplorerProvider(sessionService);
+  const sharedTreeView = vscode.window.createTreeView('cliTimeline.sharedSessions', {
+    treeDataProvider: sharedExplorer,
+  });
+  context.subscriptions.push(sharedTreeView);
 
   // Snapshot Content Provider (virtual documents for diffs)
   const snapshotProvider = new SnapshotContentProvider(sessionService);
@@ -51,28 +40,66 @@ export async function activate(context: vscode.ExtensionContext) {
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('cliTimeline.refreshSessions', () => loadWorkspaceSessions()),
-    vscode.commands.registerCommand('cliTimeline.toggleBlame', () => blameProvider.toggle()),
     vscode.commands.registerCommand('cliTimeline.showPromptsForFile', (uri?: vscode.Uri) => {
       showPromptsForFile(uri);
     }),
     vscode.commands.registerCommand('cliTimeline.showPromptDiff', (prompt, filePath) => {
       showPromptDiffCommand(sessionService, prompt, filePath);
     }),
-    vscode.commands.registerCommand('cliTimeline.comparePrompts', () => {
-      previousPromptCommand(sessionService);
-    }),
     vscode.commands.registerCommand('cliTimeline.revertToPrompt', () => {
       revertToPromptCommand(sessionService);
     }),
-    vscode.commands.registerCommand('cliTimeline.previousPrompt', () => {
-      previousPromptCommand(sessionService);
+    vscode.commands.registerCommand('cliTimeline.revertFileToSnapshot', (node: any) => {
+      if (node?.prompt && node?.change) {
+        revertFileToSnapshotCommand(sessionService, node.prompt, node.change.path);
+      }
     }),
-    vscode.commands.registerCommand('cliTimeline.nextPrompt', () => {
-      previousPromptCommand(sessionService);
+    vscode.commands.registerCommand('cliTimeline.revertPrompt', (node: any) => {
+      if (node?.prompt) {
+        revertPromptCommand(sessionService, node.prompt);
+      }
     }),
-    vscode.commands.registerCommand('cliTimeline.revealPrompt', (_promptId: string) => {
-      // TODO: reveal prompt in session explorer
-    })
+    vscode.commands.registerCommand('cliTimeline.copySessionId', (node: any) => {
+      if (node?.session?.id) {
+        vscode.env.clipboard.writeText(node.session.id);
+        vscode.window.showInformationMessage(`Session ID copied: ${node.session.id.substring(0, 8)}…`);
+      }
+    }),
+    vscode.commands.registerCommand('cliTimeline.commitSession', async (node: any) => {
+      if (!node?.session) { return; }
+      const session = node.session;
+      if (session.shared) {
+        vscode.window.showInformationMessage('This session is already shared from the repo.');
+        return;
+      }
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders || folders.length === 0) { return; }
+      const workspacePath = folders[0].uri.fsPath;
+
+      try {
+        await sessionService.commitSessionToRepo(session, workspacePath);
+        vscode.window.showInformationMessage(
+          `Session "${session.summary || session.id.substring(0, 8)}" committed to .cli-sessions/`
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Unknown error';
+        vscode.window.showErrorMessage(`Failed to commit session: ${msg}`);
+      }
+    }),
+    vscode.commands.registerCommand('cliTimeline.filterSessions', async () => {
+      const input = await vscode.window.showInputBox({
+        placeHolder: 'Search sessions and prompts...',
+        prompt: 'Filter by session name or prompt text',
+      });
+      if (input !== undefined) {
+        sessionExplorer.setFilter(input);
+        vscode.commands.executeCommand('setContext', 'cliTimeline.filterActive', input.length > 0);
+      }
+    }),
+    vscode.commands.registerCommand('cliTimeline.clearFilter', () => {
+      sessionExplorer.clearFilter();
+      vscode.commands.executeCommand('setContext', 'cliTimeline.filterActive', false);
+    }),
   );
 
   // File watcher for live session updates
@@ -101,6 +128,8 @@ async function loadWorkspaceSessions(): Promise<void> {
     async () => {
       await sessionService.loadSessions(workspacePath);
       const sessions = sessionService.getSessions();
+      const hasShared = sessions.some(s => s.shared);
+      vscode.commands.executeCommand('setContext', 'cliTimeline.hasSharedSessions', hasShared);
       if (sessions.length > 0) {
         const totalPrompts = sessions.reduce((sum, s) => sum + s.prompts.length, 0);
         vscode.window.setStatusBarMessage(
@@ -122,10 +151,9 @@ async function showPromptsForFile(uri?: vscode.Uri): Promise<void> {
     return;
   }
 
-  const items = prompts.map((p, i) => ({
-    label: `#${i + 1}: ${p.userMessage.substring(0, 60)}${p.userMessage.length > 60 ? '…' : ''}`,
+  const items = prompts.map(p => ({
+    label: p.userMessage.substring(0, 60) + (p.userMessage.length > 60 ? '…' : ''),
     description: `${p.filesChanged.length} files • ${p.timestamp.toLocaleString()}`,
-    detail: `${p.toolCalls.length} tool calls`,
     prompt: p,
   }));
 

@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { CLIAdapter } from '../adapters/adapter';
 import { CopilotCLIAdapter } from '../adapters/copilotCLI';
+import { ClaudeCodeAdapter } from '../adapters/claudeCode';
 import { Session, PromptEvent, FileChange, LineBlamEntry, SessionIndex, CLITool } from '../models/types';
 
 export class SessionService {
@@ -16,6 +19,7 @@ export class SessionService {
 
   constructor() {
     this.adapters.push(new CopilotCLIAdapter());
+    this.adapters.push(new ClaudeCodeAdapter());
   }
 
   async loadSessions(workspacePath: string): Promise<void> {
@@ -32,6 +36,10 @@ export class SessionService {
       let rootDir = adapter.getDefaultSessionDir();
       if (adapter.tool === 'copilot-cli') {
         const custom = config.get<string>('sessionPaths.copilotCLI');
+        if (custom) { rootDir = custom; }
+      }
+      if (adapter.tool === 'claude-code') {
+        const custom = config.get<string>('sessionPaths.claudeCode');
         if (custom) { rootDir = custom; }
       }
 
@@ -52,6 +60,10 @@ export class SessionService {
     }
 
     this.sessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    // Load shared sessions committed to the repo
+    await this.loadSharedSessions(workspacePath);
+
     this.buildIndex();
     this._onDidChange.fire();
   }
@@ -117,14 +129,184 @@ export class SessionService {
     const adapter = this.adapters.find(a => a.tool === session.tool);
     if (!adapter) { return null; }
     const change = prompt.filesChanged.find(f => f.path === filePath);
-    if (!change?.backupFile) { return null; }
-    const rootDir = adapter.getDefaultSessionDir();
-    const sessionDir = `${rootDir}/${session.id}`;
-    return adapter.getSnapshotContent(sessionDir, change.backupFile);
+
+    // Try backup file first
+    if (change?.backupFile) {
+      const content = await adapter.getSnapshotContent(session.sessionDir, change.backupFile);
+      if (content) { return content; }
+    }
+
+    return null;
   }
 
   getAllChangedFiles(): string[] {
     return Array.from(this.index.fileToPrompts.keys());
+  }
+
+  /**
+   * Commit a session to the repo's .cli-sessions/ folder so other users can view it.
+   * Copies session data with paths preserved, writes metadata, and git commits.
+   */
+  async commitSessionToRepo(session: Session, workspacePath: string): Promise<void> {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+
+    // Create a readable folder name from summary or session ID
+    const folderName = session.summary
+      ? session.summary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '').substring(0, 40)
+      : session.id.substring(0, 8);
+    const exportDir = path.join(workspacePath, '.cli-sessions', folderName);
+
+    // Don't overwrite an existing export
+    try {
+      await fs.promises.access(exportDir);
+      throw new Error(`Session already committed at .cli-sessions/${folderName}`);
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.startsWith('Session already')) { throw e; }
+    }
+
+    await fs.promises.mkdir(exportDir, { recursive: true });
+
+    // Get git author
+    let author = 'unknown';
+    try {
+      const { stdout } = await execFileAsync('git', ['config', 'user.name'], { cwd: workspacePath });
+      author = stdout.trim();
+    } catch { /* use default */ }
+
+    // Collect changed file paths
+    const allFiles = new Set<string>();
+    for (const p of session.prompts) {
+      for (const f of p.filesChanged) { allFiles.add(f.path); }
+    }
+
+    // Write session.json metadata
+    const meta = {
+      id: session.id,
+      tool: session.tool,
+      summary: session.summary || `Session ${session.id.substring(0, 8)}`,
+      author,
+      branch: session.branch,
+      repository: session.repository,
+      exportedAt: new Date().toISOString(),
+      originalCwd: session.cwd,
+      promptCount: session.prompts.length,
+      fileCount: allFiles.size,
+    };
+    await fs.promises.writeFile(
+      path.join(exportDir, 'session.json'),
+      JSON.stringify(meta, null, 2)
+    );
+
+    // Copy events.jsonl
+    try {
+      await fs.promises.copyFile(
+        path.join(session.sessionDir, 'events.jsonl'),
+        path.join(exportDir, 'events.jsonl')
+      );
+    } catch { /* Claude Code sessions may not have this */ }
+
+    // Copy workspace.yaml
+    try {
+      await fs.promises.copyFile(
+        path.join(session.sessionDir, 'workspace.yaml'),
+        path.join(exportDir, 'workspace.yaml')
+      );
+    } catch { /* optional */ }
+
+    // Copy rewind-snapshots (backup files for diffs/revert)
+    const srcSnapshots = path.join(session.sessionDir, 'rewind-snapshots');
+    try {
+      await this.copyDirRecursive(srcSnapshots, path.join(exportDir, 'rewind-snapshots'));
+    } catch { /* snapshots may not exist */ }
+
+    // git add and commit
+    await execFileAsync('git', ['add', exportDir], { cwd: workspacePath });
+    const commitMsg = `chore: add CLI session "${meta.summary}"\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`;
+    await execFileAsync('git', ['commit', '-m', commitMsg], { cwd: workspacePath });
+  }
+
+  /** Load shared sessions from .cli-sessions/ in the workspace */
+  private async loadSharedSessions(workspacePath: string): Promise<void> {
+    const sharedDir = path.join(workspacePath, '.cli-sessions');
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(sharedDir, { withFileTypes: true });
+    } catch { return; }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) { continue; }
+      const sessionDir = path.join(sharedDir, entry.name);
+
+      try {
+        // Read session.json for metadata
+        const metaContent = await fs.promises.readFile(
+          path.join(sessionDir, 'session.json'), 'utf-8'
+        );
+        const meta = JSON.parse(metaContent);
+
+        // Skip if this session is already loaded from local state
+        if (this.sessions.some(s => s.id === meta.id)) { continue; }
+
+        // Use the appropriate adapter to parse
+        const adapter = this.adapters.find(a => a.tool === (meta.tool as CLITool));
+        if (!adapter) { continue; }
+
+        const session = await adapter.parseSession(sessionDir);
+        if (!session || session.prompts.length === 0) { continue; }
+
+        // Remap paths from original workspace to current workspace
+        if (meta.originalCwd && meta.originalCwd !== workspacePath) {
+          this.remapSessionPaths(session, meta.originalCwd, workspacePath);
+        }
+
+        session.shared = true;
+        session.author = meta.author;
+        session.summary = meta.summary || session.summary;
+
+        this.sessions.push(session);
+      } catch {
+        // skip unparseable shared sessions
+      }
+    }
+  }
+
+  /** Remap absolute file paths from one workspace root to another */
+  private remapSessionPaths(session: Session, fromPrefix: string, toPrefix: string): void {
+    const normalizedFrom = fromPrefix.replace(/\/$/, '');
+    const remap = (p: string) => {
+      if (p.startsWith(normalizedFrom)) {
+        return toPrefix + p.substring(normalizedFrom.length);
+      }
+      if (!path.isAbsolute(p)) {
+        return path.join(toPrefix, p);
+      }
+      return p;
+    };
+
+    for (const prompt of session.prompts) {
+      for (const change of prompt.filesChanged) {
+        change.path = remap(change.path);
+      }
+    }
+    session.cwd = toPrefix;
+    if (session.gitRoot) { session.gitRoot = remap(session.gitRoot); }
+  }
+
+  /** Recursively copy a directory */
+  private async copyDirRecursive(src: string, dst: string): Promise<void> {
+    await fs.promises.mkdir(dst, { recursive: true });
+    const entries = await fs.promises.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name);
+      const dstPath = path.join(dst, entry.name);
+      if (entry.isDirectory()) {
+        await this.copyDirRecursive(srcPath, dstPath);
+      } else {
+        await fs.promises.copyFile(srcPath, dstPath);
+      }
+    }
   }
 
   dispose(): void {

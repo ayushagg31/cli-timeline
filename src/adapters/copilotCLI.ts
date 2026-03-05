@@ -38,6 +38,7 @@ interface RewindSnapshot {
 interface RewindIndex {
   version: number;
   snapshots: RewindSnapshot[];
+  filePathMap?: Record<string, string>;
 }
 
 interface EventData {
@@ -69,8 +70,24 @@ export class CopilotCLIAdapter implements CLIAdapter {
   async sessionMatchesWorkspace(sessionDir: string, workspacePath: string): Promise<boolean> {
     const meta = await this.parseWorkspaceYaml(sessionDir);
     if (!meta) { return false; }
-    const sessionPath = meta.git_root || meta.cwd || '';
-    return sessionPath === workspacePath || workspacePath.startsWith(sessionPath);
+
+    const normalizedWorkspace = workspacePath.replace(/\/$/, '');
+
+    // Prefer git_root for matching (most accurate)
+    if (meta.git_root) {
+      const gitRoot = meta.git_root.replace(/\/$/, '');
+      return gitRoot === normalizedWorkspace ||
+             normalizedWorkspace.startsWith(gitRoot + '/');
+    }
+
+    // Fallback to cwd — must be exact or cwd inside workspace
+    if (meta.cwd) {
+      const cwd = meta.cwd.replace(/\/$/, '');
+      return cwd === normalizedWorkspace ||
+             cwd.startsWith(normalizedWorkspace + '/');
+    }
+
+    return false;
   }
 
   async parseSession(sessionDir: string): Promise<Session | null> {
@@ -86,6 +103,7 @@ export class CopilotCLIAdapter implements CLIAdapter {
       repository: meta.repository,
       branch: meta.branch,
       summary: meta.summary,
+      sessionDir,
       createdAt: new Date(meta.created_at || Date.now()),
       updatedAt: new Date(meta.updated_at || Date.now()),
       prompts,
@@ -127,7 +145,13 @@ export class CopilotCLIAdapter implements CLIAdapter {
   /** Parse events.jsonl + rewind-snapshots to build prompt events */
   private async parsePrompts(sessionDir: string, sessionId: string): Promise<PromptEvent[]> {
     // First try rewind-snapshots for file-level data
-    const snapshots = await this.parseRewindSnapshots(sessionDir);
+    const { snapshots, filePathMap } = await this.parseRewindSnapshots(sessionDir);
+
+    // Build reverse map: filePath → hash
+    const pathToHash = new Map<string, string>();
+    for (const [hash, filePath] of Object.entries(filePathMap)) {
+      pathToHash.set(filePath, hash);
+    }
 
     // Then parse events.jsonl for tool calls and line-level data
     const events = await this.parseEventsJsonl(sessionDir);
@@ -166,8 +190,19 @@ export class CopilotCLIAdapter implements CLIAdapter {
       const fileChanges = this.extractFileChanges(promptToolCalls, sessionDir);
       const toolCalls = this.extractToolCalls(promptToolCalls);
 
-      // Merge with snapshot data if available
+      // Merge snapshot backup data into file changes using filePathMap
       const snapshot = snapshotsByEventId.get(msg.id);
+      if (snapshot) {
+        for (const change of fileChanges) {
+          const hash = pathToHash.get(change.path);
+          const snapshotFile = hash ? snapshot.files[hash] : undefined;
+          if (snapshotFile) {
+            change.backupFile = snapshotFile.backupFile;
+            change.gitStatus = snapshotFile.gitStatus;
+            change.contentHash = snapshotFile.contentHash;
+          }
+        }
+      }
 
       const prompt: PromptEvent = {
         id: msg.id,
@@ -189,14 +224,17 @@ export class CopilotCLIAdapter implements CLIAdapter {
     return prompts;
   }
 
-  private async parseRewindSnapshots(sessionDir: string): Promise<RewindSnapshot[]> {
+  private async parseRewindSnapshots(sessionDir: string): Promise<{ snapshots: RewindSnapshot[]; filePathMap: Record<string, string> }> {
     const indexPath = path.join(sessionDir, 'rewind-snapshots', 'index.json');
     try {
       const content = await fs.promises.readFile(indexPath, 'utf-8');
       const index: RewindIndex = JSON.parse(content);
-      return index.snapshots || [];
+      return {
+        snapshots: index.snapshots || [],
+        filePathMap: index.filePathMap || {},
+      };
     } catch {
-      return [];
+      return { snapshots: [], filePathMap: {} };
     }
   }
 

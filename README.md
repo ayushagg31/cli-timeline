@@ -4,6 +4,8 @@
 
 > Git Timeline shows commits. Local History shows saves. CLI Timeline shows what your AI assistant did.
 
+Supports **GitHub Copilot CLI** and **Claude Code** out of the box.
+
 ---
 
 ## The Problem
@@ -43,11 +45,13 @@ Right-click any file → "Show AI Prompts That Changed This File"
 
 ## Supported CLI Tools
 
-| Tool | Status | Icon |
-|------|--------|------|
-| **Copilot CLI** | ✅ Supported | 🔵 |
-| **Claude Code** | 🔜 Coming | 🟠 |
-| **Cline** | 🔜 Coming | 🟢 |
+| Tool | Session History | Diff | Revert |
+|------|----------------|------|--------|
+| **GitHub Copilot CLI** | ✅ | ✅ Exact (backup file) | ✅ |
+| **Claude Code** | ✅ | ✅ Reconstructed from edits | ❌ No backup files saved by Claude Code |
+| **Cline** | 🔜 Coming | 🔜 Coming | 🔜 Coming |
+
+> **Claude Code note:** Claude Code does not currently save pre-prompt backup files, so the revert feature is unavailable for Claude Code sessions. Diffs are reconstructed from the edit data recorded in the session (the exact `old_string`/`new_string` pairs Claude Code used), which is accurate for individual edits but may be incomplete if edits were ambiguous. The history and diff views are fully supported.
 
 ## Commands
 

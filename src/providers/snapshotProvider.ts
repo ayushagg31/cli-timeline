@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import { SessionService } from '../services/sessionService';
 import { PromptEvent } from '../models/types';
 
@@ -16,58 +17,85 @@ export class SnapshotContentProvider implements vscode.TextDocumentContentProvid
 
   async provideTextDocumentContent(uri: vscode.Uri, _token: vscode.CancellationToken): Promise<string> {
     const parts = uri.path.split('/').filter(Boolean);
-    if (parts.length < 3) { return '// Invalid snapshot URI'; }
+    if (parts.length < 3) { return ''; }
 
     const [sessionId, promptId, ...filePathParts] = parts;
     const filePath = '/' + decodeURIComponent(filePathParts.join('/'));
 
     const session = this.sessionService.getSessionById(sessionId);
-    if (!session) { return `// Session not found: ${sessionId}`; }
+    if (!session) { return ''; }
 
     const prompt = session.prompts.find(p => p.id === promptId);
-    if (!prompt) { return `// Prompt not found: ${promptId}`; }
+    if (!prompt) { return ''; }
 
-    // Try to get snapshot content from backup files
+    // Primary: use the backup file saved by the CLI
     const content = await this.sessionService.getSnapshotContent(prompt, filePath);
     if (content) {
       return content.toString('utf-8');
     }
 
-    // Fallback: reconstruct from edit events by applying edits in reverse
-    return this.reconstructContent(session, prompt, filePath);
+    // Secondary: reconstruct from old_str/new_str edit data in events.jsonl
+    const reconstructed = await this.reconstructContent(session, prompt, filePath);
+    if (reconstructed !== null) {
+      return reconstructed;
+    }
+
+    // No data available — show a readable message in the diff panel
+    return [
+      '⚠ Snapshot not available',
+      '',
+      'No backup was found for this file. This session may be old or the CLI was not updated at the time.',
+      'Ensure your CLI is updated to the latest version to enable backups for future sessions.',
+    ].join('\n');
   }
 
   /**
-   * Reconstruct file state before a prompt by looking at the edit's old_str.
-   * This gives us what the file looked like before the prompt's changes.
+   * Reconstruct file state before a prompt using old_str/new_str edit data from events.jsonl.
+   * Returns null when there is no edit data available to reconstruct from.
    */
-  private reconstructContent(
+  private async reconstructContent(
     session: import('../models/types').Session,
     prompt: PromptEvent,
     filePath: string
-  ): string {
+  ): Promise<string | null> {
     const change = prompt.filesChanged.find(f => f.path === filePath);
-    if (!change) { return `// No changes found for ${filePath} in this prompt`; }
+    if (!change) { return null; }
 
-    if (change.status === 'created' && change.fileText) {
-      // For created files, the "before" state is empty
-      return `// File created by this prompt\n\n${change.fileText}`;
+    // Before a created file — it didn't exist, so empty is correct
+    if (change.status === 'created') {
+      return '';
     }
 
-    if (change.status === 'modified' && change.oldStr) {
-      return [
-        `// State before prompt: "${prompt.userMessage.substring(0, 60)}..."`,
-        `// The following content was replaced by this prompt:`,
-        ``,
-        `// --- OLD (replaced) ---`,
-        change.oldStr,
-        ``,
-        `// --- NEW (replacement) ---`,
-        change.newStr || '',
-      ].join('\n');
-    }
+    // Read current file and reverse all edits from this prompt onward using old_str/new_str
+    try {
+      const currentContent = await fs.promises.readFile(filePath, 'utf-8');
+      let content = currentContent;
 
-    return `// Unable to reconstruct content for ${filePath}`;
+      const promptIndex = session.prompts.findIndex(p => p.id === prompt.id);
+
+      // Reverse edits from latest prompt back to current prompt (inclusive)
+      for (let i = session.prompts.length - 1; i >= promptIndex; i--) {
+        const p = session.prompts[i];
+        const edits = p.filesChanged
+          .filter(f => f.path === filePath && f.status === 'modified' && f.newStr && f.oldStr);
+        for (let j = edits.length - 1; j >= 0; j--) {
+          const edit = edits[j];
+          if (!edit.newStr || !edit.oldStr) { continue; }
+          const idx = content.indexOf(edit.newStr);
+          if (idx === -1) { continue; }
+          // Only replace if the match is unambiguous (appears exactly once)
+          const lastIdx = content.lastIndexOf(edit.newStr);
+          if (idx === lastIdx) {
+            content = content.substring(0, idx) + edit.oldStr + content.substring(idx + edit.newStr.length);
+          }
+        }
+      }
+
+      return content;
+    } catch {
+      // Current file doesn't exist on disk; use the stored oldStr snippet as last resort
+      return change.oldStr ?? null;
+    }
   }
 
   static buildUri(sessionId: string, promptId: string, filePath: string): vscode.Uri {
@@ -95,66 +123,145 @@ export async function showPromptDiffCommand(
   const session = sessionService.getSessionById(prompt.sessionId);
   if (!session) { return; }
 
-  // Find the prompt index
   const promptIndex = session.prompts.findIndex(p => p.id === prompt.id);
   const promptLabel = prompt.userMessage.substring(0, 40) + (prompt.userMessage.length > 40 ? '…' : '');
   const fileName = filePath.split('/').pop() || filePath;
 
-  // Find the change for this file
   const change = prompt.filesChanged.find(f => f.path === filePath);
   if (!change) {
     vscode.window.showInformationMessage(`No changes found for ${fileName} in this prompt.`);
     return;
   }
 
-  if (change.status === 'created') {
-    // For created files, just open the file
-    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
-    return;
+  const beforeUri = SnapshotContentProvider.buildUri(session.id, prompt.id, filePath);
+
+  let afterUri: vscode.Uri;
+  const nextPromptWithFile = session.prompts
+    .slice(promptIndex + 1)
+    .find(p => p.filesChanged.some(f => f.path === filePath && f.backupFile));
+
+  if (nextPromptWithFile) {
+    afterUri = SnapshotContentProvider.buildUri(session.id, nextPromptWithFile.id, filePath);
+  } else {
+    afterUri = vscode.Uri.file(filePath);
   }
 
-  // Build URIs for the diff
-  const beforeUri = SnapshotContentProvider.buildUri(session.id, prompt.id, filePath);
-  const afterUri = vscode.Uri.file(filePath);
-
-  const title = `${fileName} — Prompt #${promptIndex + 1}: "${promptLabel}"`;
-
+  const title = `${fileName} — "${promptLabel}"`;
   await vscode.commands.executeCommand('vscode.diff', beforeUri, afterUri, title);
 }
 
 /**
- * Navigate to the previous prompt's version of the current file.
+ * Revert a single file to its state before a prompt.
  */
-export async function previousPromptCommand(sessionService: SessionService): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) { return; }
+export async function revertFileToSnapshotCommand(
+  sessionService: SessionService,
+  prompt: PromptEvent,
+  filePath: string
+): Promise<void> {
+  const fileName = filePath.split('/').pop() || filePath;
+  const promptLabel = prompt.userMessage.substring(0, 40) + (prompt.userMessage.length > 40 ? '…' : '');
 
-  const filePath = editor.document.uri.fsPath;
-  const prompts = sessionService.getPromptsForFile(filePath);
+  const confirm = await vscode.window.showWarningMessage(
+    `Revert ${fileName} to state before "${promptLabel}"?`,
+    { modal: true },
+    'Revert'
+  );
+  if (confirm !== 'Revert') { return; }
 
-  if (prompts.length === 0) {
-    vscode.window.showInformationMessage('No CLI prompts found that changed this file.');
+  const content = await sessionService.getSnapshotContent(prompt, filePath);
+  if (!content) {
+    vscode.window.showWarningMessage(
+      `Cannot revert ${fileName}: No backup was found for this file. ` +
+      `This session may be old or the CLI was not updated at the time. ` +
+      `Ensure your CLI is updated to the latest version for future sessions.`
+    );
     return;
   }
 
-  // Show quick pick to select which prompt to view
-  const items = prompts.map((p, i) => ({
-    label: `#${i + 1}: ${p.userMessage.substring(0, 60)}${p.userMessage.length > 60 ? '…' : ''}`,
-    description: `${p.filesChanged.length} files • ${p.timestamp.toLocaleString()}`,
-    prompt: p,
-  }));
-
-  const selected = await vscode.window.showQuickPick(items, {
-    placeHolder: 'Select prompt to compare with current file',
-  });
-
-  if (selected) {
-    await showPromptDiffCommand(sessionService, selected.prompt, filePath);
-  }
+  const uri = vscode.Uri.file(filePath);
+  const document = await vscode.workspace.openTextDocument(uri);
+  const edit = new vscode.WorkspaceEdit();
+  const fullRange = new vscode.Range(
+    document.positionAt(0),
+    document.positionAt(document.getText().length)
+  );
+  edit.replace(uri, fullRange, content.toString('utf-8'));
+  await vscode.workspace.applyEdit(edit);
+  vscode.window.showInformationMessage(`Reverted ${fileName} to pre-prompt state.`);
 }
 
 /**
- * Revert a file to its state before a prompt (using the old_str from edit events).
+ * Revert all files changed by a prompt to their pre-prompt state.
+ */
+export async function revertPromptCommand(
+  sessionService: SessionService,
+  prompt: PromptEvent,
+): Promise<void> {
+  const promptLabel = prompt.userMessage.substring(0, 40) + (prompt.userMessage.length > 40 ? '…' : '');
+  const filesWithBackup = prompt.filesChanged.filter(f => f.backupFile);
+  const filesWithoutBackup = prompt.filesChanged.filter(f => !f.backupFile);
+
+  if (filesWithBackup.length === 0) {
+    vscode.window.showWarningMessage(
+      `Cannot revert "${promptLabel}": No backups were found for any files in this prompt. ` +
+      `This session may be old or the CLI was not updated at the time. ` +
+      `Ensure your CLI is updated to the latest version for future sessions.`
+    );
+    return;
+  }
+
+  // Build confirmation message — warn explicitly if some files will be skipped
+  let message = `Revert ${filesWithBackup.length} file(s) to state before "${promptLabel}"?`;
+  if (filesWithoutBackup.length > 0) {
+    const skippedNames = filesWithoutBackup
+      .map(f => `• ${f.path.split('/').pop()}`)
+      .join('\n');
+    message +=
+      `\n\n${filesWithoutBackup.length} file(s) have no backup (session may be old or CLI was not updated at the time) and will be skipped:\n` +
+      skippedNames;
+  }
+
+  const confirmLabel = filesWithoutBackup.length > 0
+    ? `Revert ${filesWithBackup.length} of ${prompt.filesChanged.length} Files`
+    : 'Revert All';
+
+  const confirm = await vscode.window.showWarningMessage(
+    message,
+    { modal: true },
+    confirmLabel
+  );
+  if (confirm !== confirmLabel) { return; }
+
+  let reverted = 0;
+  const batchEdit = new vscode.WorkspaceEdit();
+
+  for (const change of filesWithBackup) {
+    const content = await sessionService.getSnapshotContent(prompt, change.path);
+    if (!content) { continue; }
+
+    try {
+      const uri = vscode.Uri.file(change.path);
+      const document = await vscode.workspace.openTextDocument(uri);
+      const fullRange = new vscode.Range(
+        document.positionAt(0),
+        document.positionAt(document.getText().length)
+      );
+      batchEdit.replace(uri, fullRange, content.toString('utf-8'));
+      reverted++;
+    } catch {
+      // skip files that can't be reverted
+    }
+  }
+
+  if (reverted > 0) {
+    await vscode.workspace.applyEdit(batchEdit);
+  }
+
+  vscode.window.showInformationMessage(`Reverted ${reverted} file(s) to pre-prompt state.`);
+}
+
+/**
+ * Revert a file to its state before a prompt (command palette version).
  */
 export async function revertToPromptCommand(sessionService: SessionService): Promise<void> {
   const editor = vscode.window.activeTextEditor;
@@ -168,8 +275,8 @@ export async function revertToPromptCommand(sessionService: SessionService): Pro
     return;
   }
 
-  const items = prompts.map((p, i) => ({
-    label: `#${i + 1}: ${p.userMessage.substring(0, 60)}${p.userMessage.length > 60 ? '…' : ''}`,
+  const items = prompts.map(p => ({
+    label: p.userMessage.substring(0, 60) + (p.userMessage.length > 60 ? '…' : ''),
     description: `${p.filesChanged.length} files • ${p.timestamp.toLocaleString()}`,
     prompt: p,
   }));
@@ -188,7 +295,6 @@ export async function revertToPromptCommand(sessionService: SessionService): Pro
 
   if (confirm !== 'Revert') { return; }
 
-  // Try to get snapshot content
   const content = await sessionService.getSnapshotContent(selected.prompt, filePath);
   if (content) {
     const edit = new vscode.WorkspaceEdit();
@@ -200,6 +306,10 @@ export async function revertToPromptCommand(sessionService: SessionService): Pro
     await vscode.workspace.applyEdit(edit);
     vscode.window.showInformationMessage(`Reverted ${filePath.split('/').pop()} to pre-prompt state.`);
   } else {
-    vscode.window.showWarningMessage('Snapshot backup not available for this prompt. Cannot revert.');
+    vscode.window.showWarningMessage(
+      `Cannot revert ${filePath.split('/').pop()}: No backup was found for this file. ` +
+      `This session may be old or the CLI was not updated at the time. ` +
+      `Ensure your CLI is updated to the latest version for future sessions.`
+    );
   }
 }

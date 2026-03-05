@@ -23,9 +23,15 @@ export interface Session {
   repository?: string;
   branch?: string;
   summary?: string;
+  /** Absolute path to the session directory on disk */
+  sessionDir: string;
   createdAt: Date;
   updatedAt: Date;
   prompts: PromptEvent[];
+  /** True if this session was committed to the repo by another user */
+  shared?: boolean;
+  /** Git author who committed the shared session */
+  author?: string;
 }
 
 /** A single user prompt and its effects */
