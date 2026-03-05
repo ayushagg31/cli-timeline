@@ -6,7 +6,7 @@
 
 Supports **GitHub Copilot CLI** and **Claude Code** out of the box.
 
-<!-- TODO: Add a hero screenshot or GIF here showing the Session Explorer with prompts and file changes -->
+![CLI Timeline — Session Explorer with prompt diffs](resources/screenshot-hero.png)
 
 ---
 
@@ -41,23 +41,25 @@ You're stuck and need a teammate (or a senior dev) to help untangle what your CL
 ### 🗂️ Session Explorer
 Browse all sessions → see prompts → see files changed per prompt. Search and filter sessions by name or prompt text.
 
-<!-- TODO: Add screenshot of the Session Explorer sidebar -->
+![Session Explorer sidebar](resources/screenshot-session-explorer.png)
 
 ### 🔍 Prompt Diffs
 Click any file change to see a side-by-side diff of what the prompt changed. For Copilot CLI, diffs use exact pre-prompt backup snapshots. For Claude Code, diffs are reconstructed from the recorded edit operations.
 
-<!-- TODO: Add screenshot of a prompt diff view -->
+![Prompt diff view](resources/screenshot-prompt-diff.png)
 
 ### ⏪ Revert to Any Prompt
 Revert a single file — or all files changed by a prompt — back to their pre-prompt state. The extension confirms before applying any changes, so you can revert with confidence.
 
-<!-- TODO: Add screenshot or GIF of the revert flow -->
-
 ### 🤝 Session Sharing
 Commit a session to `.cli-sessions/` in your repo so teammates can browse what your CLI agent did. Shared sessions appear in a dedicated "Shared Sessions" panel (read-only) — great for code reviews, onboarding, and knowledge sharing.
 
+![Sessions list with copy and share actions](resources/screenshot-sessions-list.png)
+
 ### 📂 Reverse Lookup
 Right-click any file in the Explorer → **"Show AI Prompts That Changed This File"** to jump straight to the prompts that touched it.
+
+![Reverse lookup context menu](resources/screenshot-reverse-lookup.png)
 
 ### 🔄 Live Reload
 A file watcher monitors for new Copilot CLI activity and auto-refreshes sessions — no manual reload needed during active sessions.
