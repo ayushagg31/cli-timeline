@@ -5,6 +5,7 @@ import { CLIAdapter } from '../adapters/adapter';
 import { CopilotCLIAdapter } from '../adapters/copilotCLI';
 import { ClaudeCodeAdapter } from '../adapters/claudeCode';
 import { Session, PromptEvent, FileChange, LineBlamEntry, SessionIndex, CLITool } from '../models/types';
+import { normalizePath } from '../utils/pathUtils';
 
 export class SessionService {
   private adapters: CLIAdapter[] = [];
@@ -17,10 +18,12 @@ export class SessionService {
   private _isLoading = false;
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
+  private outputChannel: vscode.OutputChannel;
 
   constructor() {
     this.adapters.push(new CopilotCLIAdapter());
     this.adapters.push(new ClaudeCodeAdapter());
+    this.outputChannel = vscode.window.createOutputChannel('CLI Timeline');
   }
 
   async loadSessions(workspacePath: string): Promise<void> {
@@ -49,14 +52,17 @@ export class SessionService {
       }
 
       const sessionDirs = await adapter.listSessionDirs(rootDir);
+      this.outputChannel.appendLine(`[${adapter.tool}] Found ${sessionDirs.length} session(s) in ${rootDir}`);
 
       for (const dir of sessionDirs) {
         try {
           const matches = await adapter.sessionMatchesWorkspace(dir, workspacePath);
+          this.outputChannel.appendLine(`  ${path.basename(dir)}: workspace match = ${matches}`);
           if (!matches) { continue; }
           const session = await adapter.parseSession(dir);
           if (session && session.prompts.length > 0) {
             this.sessions.push(session);
+            this.outputChannel.appendLine(`    → loaded ${session.prompts.length} prompt(s)`);
           }
         } catch {
           // skip
@@ -81,9 +87,10 @@ export class SessionService {
       for (const prompt of session.prompts) {
         this.index.promptToFiles.set(prompt.id, prompt.filesChanged);
         for (const file of prompt.filesChanged) {
-          const existing = this.index.fileToPrompts.get(file.path) || [];
+          const key = normalizePath(file.path);
+          const existing = this.index.fileToPrompts.get(key) || [];
           existing.push(prompt);
-          this.index.fileToPrompts.set(file.path, existing);
+          this.index.fileToPrompts.set(key, existing);
         }
       }
     }
@@ -98,7 +105,7 @@ export class SessionService {
   }
 
   getPromptsForFile(filePath: string): PromptEvent[] {
-    return this.index.fileToPrompts.get(filePath) || [];
+    return this.index.fileToPrompts.get(normalizePath(filePath)) || [];
   }
 
   getFilesForPrompt(promptId: string): FileChange[] {
@@ -116,10 +123,11 @@ export class SessionService {
     const prompts = this.getPromptsForFile(filePath);
     const trimmed = lineContent.trim();
     if (!trimmed) { return undefined; }
+    const normalizedFilePath = normalizePath(filePath);
     for (let i = prompts.length - 1; i >= 0; i--) {
       const prompt = prompts[i];
       for (const change of prompt.filesChanged) {
-        if (change.path !== filePath) { continue; }
+        if (normalizePath(change.path) !== normalizedFilePath) { continue; }
         if (change.status === 'created' && change.fileText?.includes(trimmed)) {
           return prompt;
         }
@@ -136,7 +144,8 @@ export class SessionService {
     if (!session) { return null; }
     const adapter = this.adapters.find(a => a.tool === session.tool);
     if (!adapter) { return null; }
-    const change = prompt.filesChanged.find(f => f.path === filePath);
+    const normalizedFilePath = normalizePath(filePath);
+    const change = prompt.filesChanged.find(f => normalizePath(f.path) === normalizedFilePath);
 
     // Try backup file first
     if (change?.backupFile) {
@@ -287,9 +296,9 @@ export class SessionService {
 
   /** Remap absolute file paths from one workspace root to another */
   private remapSessionPaths(session: Session, fromPrefix: string, toPrefix: string): void {
-    const normalizedFrom = fromPrefix.replace(/[\\/]+$/, '');
+    const normalizedFrom = normalizePath(fromPrefix.replace(/[\\/]+$/, ''));
     const remap = (p: string) => {
-      if (p.startsWith(normalizedFrom)) {
+      if (normalizePath(p).startsWith(normalizedFrom)) {
         return toPrefix + p.substring(normalizedFrom.length);
       }
       if (!path.isAbsolute(p)) {
@@ -324,5 +333,6 @@ export class SessionService {
 
   dispose(): void {
     this._onDidChange.dispose();
+    this.outputChannel.dispose();
   }
 }

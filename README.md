@@ -116,6 +116,19 @@ These settings let you point CLI Timeline at custom session storage locations if
 | `cliTimeline.sessionPaths.copilotCLI` | `~/.copilot/session-state` | Path to Copilot CLI session storage |
 | `cliTimeline.sessionPaths.claudeCode` | `~/.claude` | Path to Claude Code session storage |
 
+## FAQ
+
+### "Why not just commit after every prompt?"
+
+You *can* ask your CLI agent to commit after each prompt (or use `git stash`/squash to manage history). That's a valid workflow — but CLI Timeline solves a different problem:
+
+- **It's silent and automatic.** You don't need to remember to commit, and you don't need to change your workflow. CLI Timeline reads the session data your CLI tool *already* saves — no extra steps, no polluted git history, no squashing needed.
+- **It works like VS Code's Local History.** Just as VS Code quietly tracks every save so you can recover from mistakes, CLI Timeline quietly tracks every *prompt* so you can see, diff, and revert what your AI agent changed. If you've ever been grateful for Local History after accidentally overwriting a file, you'll appreciate CLI Timeline after a session goes sideways.
+- **It captures intent, not just changes.** Git commits show *what* changed. CLI Timeline shows *why* — the exact prompt that caused each change. When you're 15 prompts in and something breaks, knowing which prompt did it is far more useful than a list of diffs.
+- **You don't need to follow "session commit discipline."** If you *do* commit after every prompt, great. But if you don't — and most people don't when they're vibe coding or iterating fast — CLI Timeline has your back.
+
+---
+
 ## License
 
 MIT

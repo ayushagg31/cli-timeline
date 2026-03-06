@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { CLIAdapter } from './adapter';
 import { CLITool, Session, PromptEvent, FileChange, ToolCall } from '../models/types';
+import { normalizePath } from '../utils/pathUtils';
 
 interface WorkspaceYaml {
   id: string;
@@ -71,20 +72,20 @@ export class CopilotCLIAdapter implements CLIAdapter {
     const meta = await this.parseWorkspaceYaml(sessionDir);
     if (!meta) { return false; }
 
-    const normalizedWorkspace = workspacePath.replace(/[\\/]+$/, '');
+    const normalizedWorkspace = normalizePath(workspacePath.replace(/[\\/]+$/, ''));
 
     // Prefer git_root for matching (most accurate)
     if (meta.git_root) {
-      const gitRoot = meta.git_root.replace(/[\\/]+$/, '');
+      const gitRoot = normalizePath(meta.git_root.replace(/[\\/]+$/, ''));
       return gitRoot === normalizedWorkspace ||
-             normalizedWorkspace.startsWith(gitRoot + path.sep);
+             normalizedWorkspace.startsWith(gitRoot + '/');
     }
 
     // Fallback to cwd — must be exact or cwd inside workspace
     if (meta.cwd) {
-      const cwd = meta.cwd.replace(/[\\/]+$/, '');
+      const cwd = normalizePath(meta.cwd.replace(/[\\/]+$/, ''));
       return cwd === normalizedWorkspace ||
-             cwd.startsWith(normalizedWorkspace + path.sep);
+             cwd.startsWith(normalizedWorkspace + '/');
     }
 
     return false;
@@ -278,9 +279,10 @@ export class CopilotCLIAdapter implements CLIAdapter {
 
       if (toolName === 'edit' && args.path) {
         const filePath = args.path;
-        // Skip session internal files
-        if (filePath.includes(`session-state${path.sep}`) || filePath.includes(`session-state/`) ||
-            filePath.includes(`.copilot${path.sep}`) || filePath.includes(`.copilot/`)) { continue; }
+        // Skip session internal files (use normalized path for cross-platform matching)
+        const normalizedFilePath = normalizePath(filePath);
+        if (normalizedFilePath.includes('session-state/') ||
+            normalizedFilePath.includes('.copilot/')) { continue; }
 
         const key = `edit:${filePath}:${event.id}`;
         if (seen.has(key)) { continue; }
@@ -294,8 +296,9 @@ export class CopilotCLIAdapter implements CLIAdapter {
         });
       } else if (toolName === 'create' && args.path) {
         const filePath = args.path;
-        if (filePath.includes(`session-state${path.sep}`) || filePath.includes(`session-state/`) ||
-            filePath.includes(`.copilot${path.sep}`) || filePath.includes(`.copilot/`)) { continue; }
+        const normalizedFilePath = normalizePath(filePath);
+        if (normalizedFilePath.includes('session-state/') ||
+            normalizedFilePath.includes('.copilot/')) { continue; }
 
         const key = `create:${filePath}`;
         if (seen.has(key)) { continue; }
