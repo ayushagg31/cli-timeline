@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionService } from '../services/sessionService';
 import { PromptEvent } from '../models/types';
+import { normalizePath } from '../utils/pathUtils';
 
 const SCHEME = 'cli-timeline-snapshot';
 
@@ -61,7 +62,8 @@ export class SnapshotContentProvider implements vscode.TextDocumentContentProvid
     prompt: PromptEvent,
     filePath: string
   ): Promise<string | null> {
-    const change = prompt.filesChanged.find(f => f.path === filePath);
+    const normalizedFilePath = normalizePath(filePath);
+    const change = prompt.filesChanged.find(f => normalizePath(f.path) === normalizedFilePath);
     if (!change) { return null; }
 
     // Before a created file — it didn't exist, so empty is correct
@@ -80,7 +82,7 @@ export class SnapshotContentProvider implements vscode.TextDocumentContentProvid
       for (let i = session.prompts.length - 1; i >= promptIndex; i--) {
         const p = session.prompts[i];
         const edits = p.filesChanged
-          .filter(f => f.path === filePath && f.status === 'modified' && f.newStr && f.oldStr);
+          .filter(f => normalizePath(f.path) === normalizedFilePath && f.status === 'modified' && f.newStr && f.oldStr);
         for (let j = edits.length - 1; j >= 0; j--) {
           const edit = edits[j];
           if (!edit.newStr || !edit.oldStr) { continue; }
@@ -130,7 +132,8 @@ export async function showPromptDiffCommand(
   const promptLabel = prompt.userMessage.substring(0, 40) + (prompt.userMessage.length > 40 ? '…' : '');
   const fileName = path.basename(filePath);
 
-  const change = prompt.filesChanged.find(f => f.path === filePath);
+  const normalizedFP = normalizePath(filePath);
+  const change = prompt.filesChanged.find(f => normalizePath(f.path) === normalizedFP);
   if (!change) {
     vscode.window.showInformationMessage(`No changes found for ${fileName} in this prompt.`);
     return;
@@ -141,7 +144,7 @@ export async function showPromptDiffCommand(
   let afterUri: vscode.Uri;
   const nextPromptWithFile = session.prompts
     .slice(promptIndex + 1)
-    .find(p => p.filesChanged.some(f => f.path === filePath && f.backupFile));
+    .find(p => p.filesChanged.some(f => normalizePath(f.path) === normalizedFP && f.backupFile));
 
   if (nextPromptWithFile) {
     afterUri = SnapshotContentProvider.buildUri(session.id, nextPromptWithFile.id, filePath);

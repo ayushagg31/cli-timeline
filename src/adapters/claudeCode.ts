@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { CLIAdapter } from './adapter';
 import { CLITool, Session, PromptEvent, FileChange, ToolCall } from '../models/types';
+import { normalizePath } from '../utils/pathUtils';
 
 interface ClaudeMessage {
   id?: string;
@@ -51,10 +52,10 @@ export class ClaudeCodeAdapter implements CLIAdapter {
   async sessionMatchesWorkspace(sessionFile: string, workspacePath: string): Promise<boolean> {
     const cwd = await this.readSessionCwd(sessionFile);
     if (!cwd) { return false; }
-    const normalizedWorkspace = workspacePath.replace(/[\\/]+$/, '');
-    const normalizedCwd = cwd.replace(/[\\/]+$/, '');
+    const normalizedWorkspace = normalizePath(workspacePath.replace(/[\\/]+$/, ''));
+    const normalizedCwd = normalizePath(cwd.replace(/[\\/]+$/, ''));
     return normalizedCwd === normalizedWorkspace ||
-           normalizedCwd.startsWith(normalizedWorkspace + path.sep);
+           normalizedCwd.startsWith(normalizedWorkspace + '/');
   }
 
   async parseSession(sessionFile: string): Promise<Session | null> {
