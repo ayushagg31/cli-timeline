@@ -125,8 +125,16 @@ export class ClaudeCodeAdapter implements CLIAdapter {
   private parsePrompts(lines: ClaudeMessage[], sessionId: string, cwd: string): PromptEvent[] {
     const prompts: PromptEvent[] = [];
 
-    // User messages are the prompt boundaries
-    const userLines = lines.filter(l => l.role === 'user' || l.type === 'user');
+    // User messages are the prompt boundaries.
+    // Filter out tool_result entries — Claude Code logs them as type:"user"
+    // (since tool results are sent as user-role messages in the API), but they
+    // are not real user prompts and must not split the time window.
+    const userLines = lines.filter(l => {
+      if (l.role !== 'user' && l.type !== 'user') { return false; }
+      const content = l.message?.content ?? l.content;
+      if (!Array.isArray(content)) { return true; }
+      return (content as Record<string, unknown>[]).some(b => b['type'] === 'text');
+    });
 
     for (let i = 0; i < userLines.length; i++) {
       const userLine = userLines[i];
