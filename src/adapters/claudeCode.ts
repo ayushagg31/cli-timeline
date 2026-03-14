@@ -11,7 +11,8 @@ interface ClaudeMessage {
   uuid?: string;
   type?: string;
   role?: string;
-  content: unknown;
+  content?: unknown;
+  message?: { role?: string; content?: unknown };
   timestamp?: string;
   sessionId?: string;
   cwd?: string;
@@ -131,7 +132,7 @@ export class ClaudeCodeAdapter implements CLIAdapter {
       const userLine = userLines[i];
       const nextUserLine = userLines[i + 1];
 
-      const messageText = this.extractText(userLine.content);
+      const messageText = this.extractText(userLine.message?.content ?? userLine.content);
       if (!messageText) { continue; }
 
       // Collect assistant messages (with tool uses) between this and the next user message
@@ -149,7 +150,8 @@ export class ClaudeCodeAdapter implements CLIAdapter {
       const seenFileEdits = new Set<string>(); // deduplicate: tool-id level
 
       for (const asst of assistantLines) {
-        const blocks = Array.isArray(asst.content) ? asst.content as Record<string, unknown>[] : [];
+        const content = asst.message?.content ?? asst.content;
+        const blocks = Array.isArray(content) ? content as Record<string, unknown>[] : [];
         for (const block of blocks) {
           if (block['type'] !== 'tool_use') { continue; }
 
