@@ -2,7 +2,7 @@
   "name": "cli-timeline",
   "displayName": "CLI Timeline",
   "description": "See what every AI prompt changed. Supports GitHub Copilot CLI and Claude Code. Browse sessions, diff prompts, revert files.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "ayushagg31",
   "license": "MIT",
   "engines": {
