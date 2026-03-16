@@ -11,7 +11,8 @@ interface ClaudeMessage {
   uuid?: string;
   type?: string;
   role?: string;
-  content: unknown;
+  content?: unknown;
+  message?: { role?: string; content?: unknown };
   timestamp?: string;
   sessionId?: string;
   cwd?: string;
@@ -124,14 +125,22 @@ export class ClaudeCodeAdapter implements CLIAdapter {
   private parsePrompts(lines: ClaudeMessage[], sessionId: string, cwd: string): PromptEvent[] {
     const prompts: PromptEvent[] = [];
 
-    // User messages are the prompt boundaries
-    const userLines = lines.filter(l => l.role === 'user' || l.type === 'user');
+    // User messages are the prompt boundaries.
+    // Filter out tool_result entries — Claude Code logs them as type:"user"
+    // (since tool results are sent as user-role messages in the API), but they
+    // are not real user prompts and must not split the time window.
+    const userLines = lines.filter(l => {
+      if (l.role !== 'user' && l.type !== 'user') { return false; }
+      const content = l.message?.content ?? l.content;
+      if (!Array.isArray(content)) { return true; }
+      return (content as Record<string, unknown>[]).some(b => b['type'] === 'text');
+    });
 
     for (let i = 0; i < userLines.length; i++) {
       const userLine = userLines[i];
       const nextUserLine = userLines[i + 1];
 
-      const messageText = this.extractText(userLine.content);
+      const messageText = this.extractText(userLine.message?.content ?? userLine.content);
       if (!messageText) { continue; }
 
       // Collect assistant messages (with tool uses) between this and the next user message
@@ -149,7 +158,8 @@ export class ClaudeCodeAdapter implements CLIAdapter {
       const seenFileEdits = new Set<string>(); // deduplicate: tool-id level
 
       for (const asst of assistantLines) {
-        const blocks = Array.isArray(asst.content) ? asst.content as Record<string, unknown>[] : [];
+        const content = asst.message?.content ?? asst.content;
+        const blocks = Array.isArray(content) ? content as Record<string, unknown>[] : [];
         for (const block of blocks) {
           if (block['type'] !== 'tool_use') { continue; }
 
